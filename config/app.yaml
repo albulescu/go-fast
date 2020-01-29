@@ -1,0 +1,4 @@
+uploads:
+  storage: local
+  path: ./
+  
