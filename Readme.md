@@ -1,6 +1,6 @@
 # GoFast
 
-A framework to boost up your API's built with GoLang
+A framework to boost up your rest api app built with GoLang
 
 ## TODO
 
