@@ -1,11 +1,11 @@
 package main
 
-import "github.com/albulescu/go-fast/pkg/modules/oauth"
+import (
+	_ "github.com/jinzhu/gorm/dialects/postgres"
+)
 
 func main() {
 	app := GetApp()
-
-	app.Use(oauth.GetModule())
-
+	// app.Use(oauth.GetModule())
 	app.Start()
 }
