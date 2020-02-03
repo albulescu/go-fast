@@ -191,6 +191,12 @@ func (mod *UsersModule) register(w http.ResponseWriter, r *http.Request) {
 func (mod *UsersModule) registerActivate(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Query().Get("code")
+
+	if code == "" {
+		mod.Error(w, r, 400, 1000, "No activation code provided")
+		return
+	}
+
 	db := mod.Db()
 	user := &User{}
 
@@ -243,15 +249,15 @@ func (mod *UsersModule) DecodeAuthorization(r *http.Request) (*User, error) {
 
 	id, data, err := jose.Decode(access[1], []byte(viper.GetString("auth.key")))
 
+	if err != nil {
+		return nil, errors.New("Failed to decode access_token")
+	}
+
 	eatv, err := strconv.ParseInt(data["eat"].(string), 10, 64)
 	eat := time.Unix(eatv, 0)
 
 	if eat.Before(time.Now()) {
 		return nil, ErrAuthorizationExpired
-	}
-
-	if err != nil {
-		return nil, errors.New("Failed to decode access_token")
 	}
 
 	db := mod.Db()
