@@ -2,16 +2,9 @@
 
 A framework to boost up your rest api app built with GoLang
 
-## TODO
-
-- CLI ( For generating code )
-- Configuration
-- Authentication
-- Oauth
-- Oauth Apps
-- Mailing
-- Uploads
-- Websocket
-- Notifications
-- ORM
-- Admin
+```
+app := gorun.New(&gorun.Config{})
+app.Use(users.Setup(&users.Config{}))
+app.Use(mailer.Setup())
+app.Run()
+```
