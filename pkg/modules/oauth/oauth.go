@@ -43,6 +43,22 @@ func (module *OauthModule) GetAuthboss() *authboss.Authboss {
 	return module.UsersModule().GetAuthboss()
 }
 
+func (module *OauthModule) Run() error {
+	router := module.app.RouterWith("users")
+	router.Post("/apps", module.createApp)
+	return nil
+}
+
+func (module *OauthModule) Middlewares() []func(http.Handler) http.Handler {
+	return []func(http.Handler) http.Handler{
+		func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Println("MIDDLEWARE OAUTH")
+			})
+		},
+	}
+}
+
 func (module *OauthModule) createApp(w http.ResponseWriter, r *http.Request) {
 
 	user, _ := module.GetAuthboss().CurrentUser(r)
@@ -59,7 +75,7 @@ func (module *OauthModule) createApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := module.app.Database()
-	db.Create(app).Scan(&app)
+	db.Create(&app)
 
 	if db.Error != nil {
 		render.Data(w, r, []byte(db.Error.Error()))
@@ -73,12 +89,6 @@ func (module *OauthModule) createApp(w http.ResponseWriter, r *http.Request) {
 func (module *OauthModule) Setup(app types.App) {
 	module.app = app
 	app.Database().AutoMigrate(&UserApp{})
-	usersModule, valid := app.GetModule("users").(*users.UsersModule)
-	if !valid {
-		panic("Not user module")
-	}
-	router := usersModule.AuthRoute()
-	router.Post("/apps", module.createApp)
 
 	cliStorage := &OauthClientsStore{db: app.Database()}
 
@@ -117,6 +127,23 @@ func (module *OauthModule) Setup(app types.App) {
 		return fmt.Sprint(user.ID), err
 	})
 
+	srv.SetUserAuthorizationHandler(func(w http.ResponseWriter, r *http.Request) (userID string, err error) {
+
+		uapp := UserApp{}
+		var count int
+		clientID := r.FormValue("client_id")
+		query := app.Database().First(&uapp, clientID)
+		query.Count(&count)
+
+		if count == 0 {
+			return "", errors.New("No client with specified id")
+		}
+
+		query.First(&uapp)
+
+		return uapp.GetID(), err
+	})
+
 	app.Router().Post("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		srv.HandleTokenRequest(w, r)
 	})
@@ -140,18 +167,18 @@ type OauthClientsStore struct {
 
 func (cs *OauthClientsStore) GetByID(id string) (cli oauth2.ClientInfo, err error) {
 
-	if id == "main" {
-		return &UserApp{
-			ID:     0,
-			Date:   time.Now(),
-			Domain: "https://localhost:8080",
-			Secret: "secret",
-			User:   nil,
-		}, err
+	app := UserApp{}
+	query := cs.db.Where("id = ?", id).Find(&app)
+	var count int
+	query.Count(&count)
+
+	if count == 0 {
+		return nil, errors.New("App not found")
 	}
 
-	app := UserApp{}
-	cs.db.Where("id = ?", id).Find(&app)
+	if !app.Enabled {
+		return nil, errors.New("App is not enabled")
+	}
 
 	return &app, nil
 }

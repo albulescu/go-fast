@@ -9,15 +9,26 @@ import (
 )
 
 type App interface {
+
+	// Get router with middlewares from specific domains
+	RouterWith(moduleMiddlewares ...string) chi.Router
+
+	// Get router
 	Router() *chi.Mux
+
+	// Get database ORM
 	Database() *gorm.DB
+
+	// Get a module
 	GetModule(name string) interface{}
 }
 
 type AppModule interface {
 	Setup(app App)
 	Name() string
+	Middlewares() []func(http.Handler) http.Handler
 	Requires() []string
+	Run() error
 }
 
 type Module struct {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/albulescu/go-fast/internal/types"
-	"github.com/go-chi/chi"
 	"github.com/gorilla/sessions"
 	"github.com/spf13/viper"
 	"github.com/volatiletech/authboss"
@@ -43,18 +42,6 @@ func (u *UsersModule) GetAuthboss() *authboss.Authboss {
 	return u.auth
 }
 
-func (module *UsersModule) AuthRoute() chi.Router {
-	return module.app.Router().With(
-		authboss.Middleware2(
-			module.auth,
-			authboss.RequireNone,
-			authboss.RespondUnauthorized,
-		),
-		lock.Middleware(module.auth),
-		confirm.Middleware(module.auth),
-	)
-}
-
 func (u *UsersModule) Setup(app types.App) {
 	u.app = app
 	app.Database().AutoMigrate(&User{})
@@ -84,7 +71,7 @@ func (u *UsersModule) Setup(app types.App) {
 	u.auth = ab
 	ab.Config.Storage.SessionState = sessionStore
 	ab.Config.Storage.CookieState = cookieStore
-	ab.Config.Paths.RootURL = fmt.Sprintf("http://localhost%s", os.Getenv("PORT"))
+	ab.Config.Paths.RootURL = fmt.Sprintf("http://localhost%s", viper.GetString("http.port"))
 	ab.Config.Storage.Server = NewUserStore(app.Database())
 	ab.Config.Modules.TwoFactorEmailAuthRequired = true
 	ab.Config.Modules.RegisterPreserveFields = []string{"email", "name"}
@@ -163,16 +150,31 @@ func (u *UsersModule) Setup(app types.App) {
 	if err := ab.Init(); err != nil {
 		panic(err)
 	}
-
-	app.Router().Use(
-		ab.LoadClientStateMiddleware,
-		remember.Middleware(ab),
-		u.dataInjector,
-	)
+}
+func (u *UsersModule) Run() error {
 
 	// Routes
-	app.Router().Use(authboss.ModuleListMiddleware(ab))
-	app.Router().Mount("/auth", http.StripPrefix("/auth", ab.Config.Core.Router))
+	middlewares := []func(http.Handler) http.Handler{
+		authboss.ModuleListMiddleware(u.auth),
+		u.auth.LoadClientStateMiddleware,
+		remember.Middleware(u.auth),
+		u.dataInjector,
+	}
+
+	u.app.Router().With(middlewares...).Mount("/auth", http.StripPrefix("/auth", u.auth.Config.Core.Router))
+
+	return nil
+}
+func (u *UsersModule) Middlewares() []func(http.Handler) http.Handler {
+	return []func(http.Handler) http.Handler{
+		authboss.Middleware2(
+			u.auth,
+			authboss.RequireNone,
+			authboss.RespondUnauthorized,
+		),
+		lock.Middleware(u.auth),
+		confirm.Middleware(u.auth),
+	}
 }
 
 func (u *UsersModule) Name() string {

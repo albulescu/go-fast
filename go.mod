@@ -18,6 +18,7 @@ require (
 	github.com/spyzhov/ajson v0.0.2
 	github.com/volatiletech/authboss v2.3.2+incompatible
 	github.com/volatiletech/authboss-clientstate v0.0.0-20190912194043-b5b6e0f4355e
+	go.mongodb.org/mongo-driver v1.2.1 // indirect
 	golang.org/x/crypto v0.0.0-20200128174031-69ecbb4d6d5d
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa // indirect
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
