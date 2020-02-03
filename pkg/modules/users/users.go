@@ -1,248 +1,323 @@
 package users
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"os"
-	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/albulescu/go-fast/internal/types"
-	"github.com/gorilla/sessions"
+	"github.com/albulescu/go-fast/internal/core"
+	"github.com/albulescu/go-fast/internal/def"
+	"github.com/defval/inject/v2"
+	jose "github.com/dvsekhvalnov/jose2go"
+	"github.com/go-chi/chi"
+	"github.com/go-chi/render"
+	"github.com/go-playground/validator/v10"
+	"github.com/lib/pq"
+	"github.com/pkg/errors"
+	"github.com/rs/xid"
 	"github.com/spf13/viper"
-	"github.com/volatiletech/authboss"
-	abclientstate "github.com/volatiletech/authboss-clientstate"
-	_ "github.com/volatiletech/authboss/auth"
-	"github.com/volatiletech/authboss/confirm"
-	"github.com/volatiletech/authboss/defaults"
-	"github.com/volatiletech/authboss/lock"
-	aboauth "github.com/volatiletech/authboss/oauth2"
-	"github.com/volatiletech/authboss/otp/twofactor"
-	"github.com/volatiletech/authboss/otp/twofactor/sms2fa"
-	"github.com/volatiletech/authboss/otp/twofactor/totp2fa"
-	_ "github.com/volatiletech/authboss/register"
-	"github.com/volatiletech/authboss/remember"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/facebook"
-	"golang.org/x/oauth2/google"
 )
 
+var (
+	ErrUserNotFound         = errors.New("User not found")
+	ErrInvalidPassword      = errors.New("Invalid password")
+	ErrUserNotActivated     = errors.New("User not activated")
+	ErrAuthorizationExpired = errors.New("Access token expired")
+)
+
+type User struct {
+	ID uint `gorm:"primary_key"`
+
+	Email    string `gorm:"unique;not null"`
+	Password string
+
+	Name string
+
+	ActivationCode string `gorm:"unique"`
+	Activated      bool
+
+	CreatedAt time.Time
+}
+
+func (u *User) GetArbitrary() map[string]string {
+	return map[string]string{
+		"id":   fmt.Sprint(u.ID),
+		"name": u.Name,
+	}
+}
+
+type UserRegister struct {
+	Email          string `json:"email" validate:"required,email"`
+	Password       string `json:"password" validate:"required"`
+	VerifyPassword string `json:"verify_password" validate:"required,eqfield=Password"`
+	Name           string `json:"name" validate:"required"`
+}
+
+type UserAuth struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
+}
+
+type Config struct{}
+
+func Setup(config *Config) def.ModuleFactory {
+	return func(di *inject.Container) interface{} {
+		return &UsersModule{}
+	}
+}
+
 type UsersModule struct {
-	app  types.App
-	auth *authboss.Authboss
+	core.AbstractModule
 }
 
-func GetModule() types.AppModule {
-	return &UsersModule{}
+func (mod *UsersModule) Routes(mux *chi.Mux) {
+
+	mux.Post("/register", http.HandlerFunc(mod.register))
+	mux.Post("/register/activate", http.HandlerFunc(mod.registerActivate))
+
+	mux.Post("/auth", http.HandlerFunc(mod.auth))
+
+	r := mux.With(mod.AuthMiddleware())
+	r.Get("/me", http.HandlerFunc(mod.me))
+	r.Get("/me/avatar", http.HandlerFunc(mod.avatar))
 }
 
-func (u *UsersModule) GetAuthboss() *authboss.Authboss {
-	return u.auth
+func (mod *UsersModule) avatar(w http.ResponseWriter, r *http.Request) {
+	render.Data(w, r, []byte("Avatar bytes"))
 }
 
-func (u *UsersModule) Setup(app types.App) {
-	u.app = app
-	app.Database().AutoMigrate(&User{})
+func (mod *UsersModule) auth(w http.ResponseWriter, r *http.Request) {
 
-	isApi := true
-	sessionCookieName := viper.GetString("auth.cookie.name")
-	cookieStoreKey := viper.GetString("auth.cookie.key")
-	sessionStoreKey := viper.GetString("auth.session.key")
-	cookieStore := abclientstate.NewCookieStorer([]byte(cookieStoreKey), nil)
-	cookieStore.HTTPOnly = false
-	cookieStore.Secure = false
-	sessionStore := abclientstate.NewSessionStorer(sessionCookieName, []byte(sessionStoreKey), nil)
-	cstore := sessionStore.Store.(*sessions.CookieStore)
-	cstore.Options.HttpOnly = false
-	cstore.Options.Secure = false
+	auth := UserAuth{}
 
-	duration, err := time.ParseDuration(viper.GetString("auth.cookie.maxage"))
+	if err := render.DecodeJSON(r.Body, &auth); err != nil {
+		mod.Error(w, r, 400, 1000, "Failed to read json payload")
+		return
+	}
+
+	validate := validator.New()
+	if err := validate.Struct(auth); err != nil {
+		mod.Error(w, r, 400, 1000, err.Error())
+		return
+	}
+
+	user, err := mod.Auth(auth.Email, auth.Password)
+
 	if err != nil {
-		panic(
-			fmt.Sprintf("Invalid auth.cookie.maxage: %s", viper.GetString("auth.cookie.maxage")),
-		)
-	}
-	cstore.MaxAge(int(duration.Seconds()))
-
-	// Configure authboss
-	ab := authboss.New()
-	u.auth = ab
-	ab.Config.Storage.SessionState = sessionStore
-	ab.Config.Storage.CookieState = cookieStore
-	ab.Config.Paths.RootURL = fmt.Sprintf("http://localhost%s", viper.GetString("http.port"))
-	ab.Config.Storage.Server = NewUserStore(app.Database())
-	ab.Config.Modules.TwoFactorEmailAuthRequired = true
-	ab.Config.Modules.RegisterPreserveFields = []string{"email", "name"}
-	ab.Config.Core.ViewRenderer = defaults.JSONRenderer{}
-	ab.Config.Core.MailRenderer = &MailRenderer{}
-	ab.Config.Core.Logger = defaults.NewLogger(os.Stdout)
-	ab.Config.Core.Responder = defaults.NewResponder(&MailRenderer{})
-	defaults.SetCore(&ab.Config, isApi, false)
-
-	emailRule := defaults.Rules{
-		FieldName: "email", Required: true,
-		MatchError: "Must be a valid e-mail address",
-		MustMatch:  regexp.MustCompile(`.*@.*\.[a-z]+`),
-	}
-	passwordRule := defaults.Rules{
-		FieldName: "password", Required: true,
-		MinLength: 4,
-	}
-	nameRule := defaults.Rules{
-		FieldName: "name", Required: true,
-		MinLength: 2,
+		mod.Error(w, r, http.StatusUnauthorized, 1000, err.Error())
+		return
 	}
 
-	ab.Config.Core.BodyReader = defaults.HTTPBodyReader{
-		ReadJSON: true,
-		Rulesets: map[string][]defaults.Rules{
-			"register":    {emailRule, passwordRule, nameRule},
-			"recover_end": {passwordRule},
-		},
-		Confirms: map[string][]string{
-			"register":    {"password", authboss.ConfirmPrefix + "password"},
-			"recover_end": {"password", authboss.ConfirmPrefix + "password"},
-		},
-		Whitelist: map[string][]string{
-			"register": {"email", "name", "password"},
-		},
+	access, err := mod.CreateJWT(user)
+
+	if err != nil {
+		mod.Error(w, r, http.StatusInternalServerError, 1000, err.Error())
+		return
 	}
 
-	// Set up 2fa
-	twofaRecovery := &twofactor.Recovery{Authboss: ab}
-	if err := twofaRecovery.Setup(); err != nil {
-		panic(err)
-	}
-
-	totp := &totp2fa.TOTP{Authboss: ab}
-	if err := totp.Setup(); err != nil {
-		panic(err)
-	}
-
-	sms := &sms2fa.SMS{Authboss: ab, Sender: smsLogSender{}}
-	if err := sms.Setup(); err != nil {
-		panic(err)
-	}
-	ab.Config.Modules.OAuth2Providers = map[string]authboss.OAuth2Provider{
-		"google": {
-			OAuth2Config: &oauth2.Config{
-				ClientID:     viper.GetString("auth.modules.oauth.google.client_id"),
-				ClientSecret: viper.GetString("auth.modules.oauth.google.client_secret"),
-				Scopes:       []string{`profile`, `email`},
-				Endpoint:     google.Endpoint,
-			},
-			FindUserDetails: aboauth.GoogleUserDetails,
-		},
-		"facebook": {
-			OAuth2Config: &oauth2.Config{
-				ClientID:     viper.GetString("auth.modules.oauth.facebook.client_id"),
-				ClientSecret: viper.GetString("auth.modules.oauth.facebook.client_secret"),
-				Scopes:       []string{`name`, `email`},
-				Endpoint:     facebook.Endpoint,
-			},
-			FindUserDetails: aboauth.FacebookUserDetails,
-		},
-	}
-
-	// Initialize authboss (instantiate modules etc.)
-	if err := ab.Init(); err != nil {
-		panic(err)
-	}
-}
-func (u *UsersModule) Run() error {
-
-	// Routes
-	middlewares := []func(http.Handler) http.Handler{
-		authboss.ModuleListMiddleware(u.auth),
-		u.auth.LoadClientStateMiddleware,
-		remember.Middleware(u.auth),
-		u.dataInjector,
-	}
-
-	u.app.Router().With(middlewares...).Mount("/auth", http.StripPrefix("/auth", u.auth.Config.Core.Router))
-
-	return nil
-}
-func (u *UsersModule) Middlewares() []func(http.Handler) http.Handler {
-	return []func(http.Handler) http.Handler{
-		authboss.Middleware2(
-			u.auth,
-			authboss.RequireNone,
-			authboss.RespondUnauthorized,
-		),
-		lock.Middleware(u.auth),
-		confirm.Middleware(u.auth),
-	}
-}
-
-func (u *UsersModule) Name() string {
-	return "users"
-}
-
-func (u *UsersModule) Requires() []string {
-	return []string{}
-}
-
-func (module *UsersModule) Auth(email, password string) (*User, error) {
-
-	user := User{}
-	query := module.app.Database().Where("email = ?", email).Find(&user).Limit(1)
-
-	var count int
-
-	if query.Count(&count); count == 0 {
-		return nil, authboss.ErrUserNotFound
-	}
-
-	return &user, bcrypt.CompareHashAndPassword(
-		[]byte(user.GetPassword()),
-		[]byte(password),
-	)
-}
-
-type smsLogSender struct {
-}
-
-// Send an SMS
-func (s smsLogSender) Send(_ context.Context, number, text string) error {
-	fmt.Println("sms sent to:", number, "contents:", text)
-	return nil
-}
-
-func (u *UsersModule) dataInjector(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data := u.layoutData(w, &r)
-		r = r.WithContext(context.WithValue(r.Context(), authboss.CTXKeyData, data))
-		handler.ServeHTTP(w, r)
+	render.JSON(w, r, def.M{
+		"access_token": access,
 	})
 }
 
-func (u *UsersModule) layoutData(w http.ResponseWriter, r **http.Request) authboss.HTMLData {
-	currentUserName := ""
-	userInter, err := u.auth.LoadCurrentUser(r)
-	if userInter != nil && err == nil {
-		currentUserName = userInter.(*User).Name
+//
+// Register new user
+//
+func (mod *UsersModule) register(w http.ResponseWriter, r *http.Request) {
+
+	register := UserRegister{}
+
+	if err := render.DecodeJSON(r.Body, &register); err != nil {
+		mod.Error(w, r, 400, 1000, "Failed to read json payload")
+		return
 	}
 
-	return authboss.HTMLData{
-		"loggedin":          userInter != nil,
-		"current_user_name": currentUserName,
-		"flash_success":     authboss.FlashSuccess(w, *r),
-		"flash_error":       authboss.FlashError(w, *r),
+	validate := validator.New()
+	if err := validate.Struct(register); err != nil {
+		mod.Error(w, r, 400, 1000, err.Error())
+		return
+	}
+
+	password, err := bcrypt.GenerateFromPassword(
+		[]byte(register.Password),
+		bcrypt.DefaultCost,
+	)
+
+	if err != nil {
+		mod.Error(w, r, 400, 1000, "User with email already exists")
+		return
+	}
+
+	user := &User{
+		Email:     register.Email,
+		Password:  string(password),
+		Name:      register.Name,
+		CreatedAt: time.Now(),
+	}
+
+	db := mod.Db()
+	db.AutoMigrate(&user)
+
+	err = db.Create(&user).Error
+	if err != nil {
+		switch err.(*pq.Error).Code {
+		case "23505":
+			mod.Error(w, r, 400, 1000, "User with email already exists")
+		}
+		return
+	}
+
+	activationCode := xid.New().String()
+
+	mod.Db().Model(&user).Update("activation_code", activationCode)
+
+	mod.Mailer().Send(
+		"register_activation",
+		map[string]interface{}{
+			"NAME": user.Name,
+			"CODE": activationCode,
+		},
+		"{{.NAME}}, thanks for registering. Please activate your account.",
+		user.Email,
+	)
+
+	w.WriteHeader(201)
+}
+
+// Register new user route
+func (mod *UsersModule) registerActivate(w http.ResponseWriter, r *http.Request) {
+
+	code := r.URL.Query().Get("code")
+	db := mod.Db()
+	user := &User{}
+
+	if db.Where("activation_code = ?", code).First(user).RecordNotFound() {
+		mod.Error(w, r, 400, 1000, "Invalid activation code")
+		return
+	}
+
+	db.Model(&user).Updates(
+		def.M{
+			"activation_code": "",
+			"activated":       true,
+		},
+	)
+
+	if db.Error != nil {
+		mod.Error(w, r, 400, 1000, "Failed to activate account")
+		return
+	}
+
+	mod.Mailer().Send(
+		"register_activation_complete",
+		map[string]interface{}{
+			"NAME": user.Name,
+		},
+		"{{.NAME}}, your account is activated.",
+		user.Email,
+	)
+}
+
+func (mod *UsersModule) me(w http.ResponseWriter, r *http.Request) {
+	if user, err := mod.GetUser(w, r); err == nil {
+		render.JSON(w, r, user.GetArbitrary())
 	}
 }
 
-type MailRenderer struct{}
+func (mod *UsersModule) DecodeAuthorization(r *http.Request) (*User, error) {
 
-func (mr *MailRenderer) Load(names ...string) error {
-	fmt.Println("Load mail templates:", names)
-	return nil
+	authorization := r.Header.Get("Authorization")
+
+	if authorization == "" {
+		return nil, errors.New("No authorization header provided")
+	}
+
+	access := strings.Split(authorization, "Bearer ")
+
+	if len(access) != 2 {
+		return nil, errors.New("Invalid authorization")
+	}
+
+	id, data, err := jose.Decode(access[1], []byte(viper.GetString("auth.key")))
+
+	eatv, err := strconv.ParseInt(data["eat"].(string), 10, 64)
+	eat := time.Unix(eatv, 0)
+
+	if eat.Before(time.Now()) {
+		return nil, ErrAuthorizationExpired
+	}
+
+	if err != nil {
+		return nil, errors.New("Failed to decode access_token")
+	}
+
+	db := mod.Db()
+	user := &User{}
+
+	if db.Where("id = ?", id).First(user).RecordNotFound() {
+		return nil, ErrUserNotFound
+	}
+
+	return user, nil
 }
 
-// Render the given template
-func (mr *MailRenderer) Render(ctx context.Context, page string, data authboss.HTMLData) (output []byte, contentType string, err error) {
-	fmt.Println("Render mail template:", page, data)
-	return []byte("Mail"), "text/html", nil
+func (mod *UsersModule) GetUser(w http.ResponseWriter, r *http.Request) (*User, error) {
+
+	user, err := mod.DecodeAuthorization(r)
+
+	if err != nil {
+		mod.Error(w, r, 401, 1000, errors.Wrap(err, "Unauthorized").Error())
+		return nil, err
+	}
+
+	return user, err
+}
+
+// Authenticate user
+func (mod *UsersModule) Auth(email, password string) (*User, error) {
+
+	db := mod.Db()
+	user := &User{}
+
+	if db.Where("email = ?", email).First(user).RecordNotFound() {
+		return nil, ErrUserNotFound
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+		return nil, ErrInvalidPassword
+	}
+
+	if !user.Activated {
+		return nil, ErrUserNotActivated
+	}
+
+	return user, nil
+}
+
+func (mod *UsersModule) CreateJWT(user *User) (string, error) {
+
+	issued := jose.Header("iat", strconv.FormatInt(user.CreatedAt.Unix(), 10))
+	aeat := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+
+	return jose.Sign(
+		fmt.Sprint(user.ID),
+		jose.HS256,
+		[]byte(viper.GetString("auth.key")),
+		issued,
+		jose.Header("eat", aeat),
+		jose.Header("scope", "app"),
+	)
+}
+
+func (mod *UsersModule) AuthMiddleware() func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := mod.GetUser(w, r); err == nil {
+				h.ServeHTTP(w, r)
+			}
+		})
+	}
 }

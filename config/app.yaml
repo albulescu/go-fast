@@ -1,4 +1,18 @@
-uploads:
-  storage: local
-  path: ./
-  
+http:
+  port: :8585
+database:
+  adaptor: postgres
+  args: "host=localhost port=32773 user=postgres password=postgres dbname=remote sslmode=disable"
+modules:
+  uploads:
+    storage: local
+    path: ./
+auth:
+  key: gVkYp3s5v8y/B?E(H+MbQeThWmZq4t7w9z$C&F)J@NcRfUjXn2r5u8x/A%D*G-KaPdSgVkYp3s6v9y$B&E(H+MbQeThWmZq4t7w!z%C*F-J@NcRfUjXn2r5u8x/A?D(G
+oauth:
+  code_expire: 1h
+mailer:
+  adapter: mailgun
+  params:
+    - http://example.com
+    - secret_key
