@@ -147,7 +147,7 @@ func (mod *UsersModule) register(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		mod.Error(w, r, 400, 1000, "User with email already exists")
+		mod.Error(w, r, 400, 1000, "Failed to compute password hash")
 		return
 	}
 
