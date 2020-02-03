@@ -305,8 +305,16 @@ func (mod *UsersModule) Auth(email, password string) (*User, error) {
 
 func (mod *UsersModule) CreateJWT(user *User) (string, error) {
 
+	expire := viper.GetString("auth.expire")
+	duration, err := time.ParseDuration(expire)
+
+	if err != nil {
+		mod.Log().Errorf("Failed to parse jwt expire duration: %s", expire)
+		duration = time.Hour
+	}
+
 	issued := jose.Header("iat", strconv.FormatInt(user.CreatedAt.Unix(), 10))
-	aeat := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	aeat := strconv.FormatInt(time.Now().Add(duration).Unix(), 10)
 
 	return jose.Sign(
 		fmt.Sprint(user.ID),

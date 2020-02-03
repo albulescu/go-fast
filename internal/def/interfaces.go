@@ -1,10 +1,14 @@
 package def
 
-import "github.com/go-chi/chi"
+import (
+	"github.com/apsdehal/go-logger"
+	"github.com/go-chi/chi"
+)
 
 type GoRunApp interface {
 	Use(factory ModuleFactory)
 	Module(name string) (interface{}, error)
+	Log() *logger.Logger
 	Run()
 }
 

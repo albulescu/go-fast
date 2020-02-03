@@ -4,6 +4,7 @@ go 1.13
 
 require (
 	github.com/DataDog/zstd v1.4.4 // indirect
+	github.com/apsdehal/go-logger v0.0.0-20190515212710-b0d6ccfee0e6
 	github.com/defval/inject v1.5.2
 	github.com/defval/inject/v2 v2.2.2
 	github.com/dvsekhvalnov/jose2go v0.0.0-20180829124132-7f401d37b68a

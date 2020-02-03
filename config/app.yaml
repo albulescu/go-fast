@@ -1,5 +1,5 @@
 http:
-  port: :8585
+  listen: :8585
 database:
   adaptor: postgres
   args: "host=localhost port=32773 user=postgres password=postgres dbname=remote sslmode=disable"
@@ -9,6 +9,7 @@ modules:
     path: ./
 auth:
   key: gVkYp3s5v8y/B?E(H+MbQeThWmZq4t7w9z$C&F)J@NcRfUjXn2r5u8x/A%D*G-KaPdSgVkYp3s6v9y$B&E(H+MbQeThWmZq4t7w!z%C*F-J@NcRfUjXn2r5u8x/A?D(G
+  expire: 24h
 oauth:
   code_expire: 1h
 mailer:

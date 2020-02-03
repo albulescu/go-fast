@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/albulescu/go-fast/internal/def"
+	"github.com/apsdehal/go-logger"
 	"github.com/defval/inject/v2"
 	"github.com/go-chi/chi"
 	"github.com/jinzhu/gorm"
@@ -77,11 +78,21 @@ func (app *GoRun) provideDatabase() (*gorm.DB, func(), error) {
 	return db, clean, err
 }
 
+func (app *GoRun) provideLogger() (*logger.Logger, func(), error) {
+	log, err := logger.New("test", 1, os.Stdout)
+	fn := func() {}
+	if err != nil {
+		return nil, fn, err
+	}
+	return log, fn, nil
+}
+
 func (app *GoRun) Di() *inject.Container {
 
 	if app.di == nil {
 		app.di = inject.New(
 			inject.Provide(app.provideDatabase),
+			inject.Provide(app.provideLogger),
 			inject.Provide(func() def.GoRunApp { return app }),
 		)
 	}
@@ -101,6 +112,12 @@ func (app *GoRun) Module(name string) (interface{}, error) {
 	return nil, errors.New("Error")
 }
 
+func (app *GoRun) Log() *logger.Logger {
+	var log *logger.Logger
+	app.di.Extract(&log)
+	return log
+}
+
 func (app *GoRun) Run() {
 
 	for _, mod := range app.modules {
@@ -108,6 +125,7 @@ func (app *GoRun) Run() {
 			m.Routes(app.mux)
 		}
 	}
-
-	http.ListenAndServe(":8585", app.mux)
+	listen := viper.GetString("http.listen")
+	app.Log().Infof("Starting server at %s", listen)
+	http.ListenAndServe(listen, app.mux)
 }

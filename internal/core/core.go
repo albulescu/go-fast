@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/albulescu/go-fast/internal/def"
+	"github.com/apsdehal/go-logger"
 	"github.com/defval/inject/v2"
 	"github.com/go-chi/render"
 	"github.com/jinzhu/gorm"
@@ -37,6 +38,12 @@ func (am *AbstractModule) Db() *gorm.DB {
 	var db *gorm.DB
 	am.di.Extract(&db)
 	return db
+}
+
+func (am *AbstractModule) Log() *logger.Logger {
+	var log *logger.Logger
+	am.di.Extract(&log)
+	return log
 }
 
 func (am *AbstractModule) Mailer() def.Mailer {
