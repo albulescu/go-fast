@@ -247,7 +247,7 @@ func (mod *UsersModule) DecodeAuthorization(r *http.Request) (*User, error) {
 		return nil, errors.New("Invalid authorization")
 	}
 
-	id, data, err := jose.Decode(access[1], []byte(viper.GetString("auth.key")))
+	id, data, err := jose.Decode(access[1], []byte(viper.GetString("module.auth.key")))
 
 	if err != nil {
 		return nil, errors.New("Failed to decode access_token")
@@ -305,7 +305,7 @@ func (mod *UsersModule) Auth(email, password string) (*User, error) {
 
 func (mod *UsersModule) CreateJWT(user *User) (string, error) {
 
-	expire := viper.GetString("auth.expire")
+	expire := viper.GetString("module.auth.expire")
 	duration, err := time.ParseDuration(expire)
 
 	if err != nil {
@@ -319,7 +319,7 @@ func (mod *UsersModule) CreateJWT(user *User) (string, error) {
 	return jose.Sign(
 		fmt.Sprint(user.ID),
 		jose.HS256,
-		[]byte(viper.GetString("auth.key")),
+		[]byte(viper.GetString("module.auth.key")),
 		issued,
 		jose.Header("eat", aeat),
 		jose.Header("scope", "app"),
